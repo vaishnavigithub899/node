@@ -1720,7 +1720,7 @@ void CodeStubAssembler::StoreBoundedSizeToObject(TNode<HeapObject> object,
                                                  TNode<IntPtrT> offset,
                                                  TNode<UintPtrT> value) {
 #ifdef V8_ENABLE_SANDBOX
-  CSA_DCHECK(this, UintPtrLessThan(
+  CSA_DCHECK(this, UintPtrLessThanOrEqual(
                        value, IntPtrConstant(kMaxSafeBufferSizeForSandbox)));
   TNode<Uint64T> raw_value = ReinterpretCast<Uint64T>(value);
   TNode<Uint64T> shift_amount = Uint64Constant(kBoundedSizeShift);
@@ -1806,7 +1806,7 @@ void CodeStubAssembler::StoreExternalPointerToObject(TNode<HeapObject> object,
 #endif  // V8_ENABLE_SANDBOX
 }
 
-#ifdef V8_CODE_POINTER_SANDBOXING
+#ifdef V8_ENABLE_SANDBOX
 TNode<UintPtrT> CodeStubAssembler::ComputeCodePointerTableEntryOffset(
     TNode<HeapObject> object, TNode<IntPtrT> field_offset) {
   TNode<IndirectPointerHandleT> handle =
@@ -1823,24 +1823,24 @@ TNode<UintPtrT> CodeStubAssembler::ComputeCodePointerTableEntryOffset(
       Word32Shl(index, UniqueUint32Constant(kCodePointerTableEntrySizeLog2)));
   return offset;
 }
-#endif  // V8_CODE_POINTER_SANDBOXING
+#endif  // V8_ENABLE_SANDBOX
 
-TNode<RawPtrT> CodeStubAssembler::LoadCodeEntrypointFromObject(
+TNode<RawPtrT> CodeStubAssembler::LoadCodeEntrypointViaIndirectPointerField(
     TNode<HeapObject> object, TNode<IntPtrT> field_offset) {
-#ifdef V8_CODE_POINTER_SANDBOXING
+#ifdef V8_ENABLE_SANDBOX
   TNode<RawPtrT> table =
       ExternalConstant(ExternalReference::code_pointer_table_address());
   TNode<UintPtrT> offset =
       ComputeCodePointerTableEntryOffset(object, field_offset);
   return Load<RawPtrT>(table, offset);
 #else
-  return LoadObjectField<RawPtrT>(object, field_offset);
-#endif  // V8_CODE_POINTER_SANDBOXING
+  UNREACHABLE();
+#endif  // V8_ENABLE_SANDBOX
 }
 
 TNode<HeapObject> CodeStubAssembler::LoadIndirectPointerFromObject(
     TNode<HeapObject> object, int field_offset) {
-#ifdef V8_CODE_POINTER_SANDBOXING
+#ifdef V8_ENABLE_SANDBOX
   TNode<RawPtrT> table =
       ExternalConstant(ExternalReference::code_pointer_table_address());
   TNode<UintPtrT> offset =
@@ -1855,16 +1855,16 @@ TNode<HeapObject> CodeStubAssembler::LoadIndirectPointerFromObject(
   return UncheckedCast<HeapObject>(BitcastWordToTagged(value));
 #else
   UNREACHABLE();
-#endif  // V8_CODE_POINTER_SANDBOXING
+#endif  // V8_ENABLE_SANDBOX
 }
 
 TNode<HeapObject> CodeStubAssembler::LoadMaybeIndirectPointerFromObject(
     TNode<HeapObject> object, int field_offset) {
-#ifdef V8_CODE_POINTER_SANDBOXING
+#ifdef V8_ENABLE_SANDBOX
   return LoadIndirectPointerFromObject(object, field_offset);
 #else
   return LoadObjectField<HeapObject>(object, field_offset);
-#endif  // V8_CODE_POINTER_SANDBOXING
+#endif  // V8_ENABLE_SANDBOX
 }
 
 TNode<Object> CodeStubAssembler::LoadFromParentFrame(int offset) {
@@ -3372,36 +3372,38 @@ void CodeStubAssembler::StoreObjectField(TNode<HeapObject> object,
   }
 }
 
-void CodeStubAssembler::StoreIndirectPointerField(TNode<HeapObject> object,
-                                                  int offset,
-                                                  TNode<Code> value) {
-  DCHECK(V8_CODE_POINTER_SANDBOXING_BOOL);
-  OptimizedStoreIndirectPointerField(object, offset, value);
+void CodeStubAssembler::StoreIndirectPointerField(
+    TNode<HeapObject> object, int offset, IndirectPointerTag tag,
+    TNode<ExposedTrustedObject> value) {
+  DCHECK(V8_ENABLE_SANDBOX_BOOL);
+  OptimizedStoreIndirectPointerField(object, offset, tag, value);
 }
 
 void CodeStubAssembler::StoreIndirectPointerFieldNoWriteBarrier(
-    TNode<HeapObject> object, int offset, TNode<Code> value) {
-  DCHECK(V8_CODE_POINTER_SANDBOXING_BOOL);
-  OptimizedStoreIndirectPointerFieldNoWriteBarrier(object, offset, value);
+    TNode<HeapObject> object, int offset, IndirectPointerTag tag,
+    TNode<ExposedTrustedObject> value) {
+  DCHECK(V8_ENABLE_SANDBOX_BOOL);
+  OptimizedStoreIndirectPointerFieldNoWriteBarrier(object, offset, tag, value);
 }
 
-void CodeStubAssembler::StoreMaybeIndirectPointerField(TNode<HeapObject> object,
-                                                       int offset,
-                                                       TNode<Code> value) {
-#ifdef V8_CODE_POINTER_SANDBOXING
-  StoreIndirectPointerField(object, offset, value);
+void CodeStubAssembler::StoreMaybeIndirectPointerField(
+    TNode<HeapObject> object, int offset, IndirectPointerTag tag,
+    TNode<ExposedTrustedObject> value) {
+#ifdef V8_ENABLE_SANDBOX
+  StoreIndirectPointerField(object, offset, tag, value);
 #else
   StoreObjectField(object, offset, value);
-#endif  // V8_CODE_POINTER_SANDBOXING
+#endif  // V8_ENABLE_SANDBOX
 }
 
 void CodeStubAssembler::StoreMaybeIndirectPointerFieldNoWriteBarrier(
-    TNode<HeapObject> object, int offset, TNode<Code> value) {
-#ifdef V8_CODE_POINTER_SANDBOXING
-  StoreIndirectPointerFieldNoWriteBarrier(object, offset, value);
+    TNode<HeapObject> object, int offset, IndirectPointerTag tag,
+    TNode<ExposedTrustedObject> value) {
+#ifdef V8_ENABLE_SANDBOX
+  StoreIndirectPointerFieldNoWriteBarrier(object, offset, tag, value);
 #else
   StoreObjectFieldNoWriteBarrier(object, offset, value);
-#endif  // V8_CODE_POINTER_SANDBOXING
+#endif  // V8_ENABLE_SANDBOX
 }
 
 void CodeStubAssembler::UnsafeStoreObjectFieldNoWriteBarrier(
@@ -8649,69 +8651,109 @@ void CodeStubAssembler::TryToName(TNode<Object> key, Label* if_keyisindex,
 
     BIND(&if_string);
     {
-      Label if_thinstring(this), if_has_cached_index(this),
-          if_forwarding_index(this);
+      TVARIABLE(Uint32T, var_raw_hash);
+      Label check_string_hash(this, {&var_raw_hash});
 
       // TODO(v8:12007): LoadNameRawHashField() should be an acquire load.
-      TNode<Uint32T> raw_hash_field = LoadNameRawHashField(CAST(key));
-      GotoIf(IsClearWord32(raw_hash_field,
-                           Name::kDoesNotContainCachedArrayIndexMask),
-             &if_has_cached_index);
-      // No cached array index. If the string knows that it contains an index,
-      // then it must be an uncacheable index. Handle this case in the runtime.
-      GotoIf(IsEqualInWord32<Name::HashFieldTypeBits>(
-                 raw_hash_field, Name::HashFieldType::kIntegerIndex),
-             if_bailout);
-
-      static_assert(base::bits::CountPopulation(kThinStringTagBit) == 1);
-      GotoIf(IsSetWord32(var_instance_type.value(), kThinStringTagBit),
-             &if_thinstring);
-
-      // Check if the hash field encodes an internalized string forwarding
-      // index.
-      GotoIf(IsBothEqualInWord32<Name::HashFieldTypeBits,
-                                 Name::IsInternalizedForwardingIndexBit>(
-                 raw_hash_field, Name::HashFieldType::kForwardingIndex, true),
-             &if_forwarding_index);
-
-      // Finally, check if |key| is internalized.
-      static_assert(kNotInternalizedTag != 0);
-      GotoIf(IsSetWord32(var_instance_type.value(), kIsNotInternalizedMask),
-             if_notinternalized != nullptr ? if_notinternalized : if_bailout);
-
-      *var_unique = CAST(key);
-      Goto(if_keyisunique);
-
-      BIND(&if_thinstring);
+      var_raw_hash = LoadNameRawHashField(CAST(key));
+      Goto(&check_string_hash);
+      BIND(&check_string_hash);
       {
-        *var_unique =
-            LoadObjectField<String>(CAST(key), ThinString::kActualOffset);
+        Label if_thinstring(this), if_has_cached_index(this),
+            if_forwarding_index(this);
+
+        TNode<Uint32T> raw_hash_field = var_raw_hash.value();
+        GotoIf(IsClearWord32(raw_hash_field,
+                             Name::kDoesNotContainCachedArrayIndexMask),
+               &if_has_cached_index);
+        // No cached array index. If the string knows that it contains an index,
+        // then it must be an uncacheable index. Handle this case in the
+        // runtime.
+        GotoIf(IsEqualInWord32<Name::HashFieldTypeBits>(
+                   raw_hash_field, Name::HashFieldType::kIntegerIndex),
+               if_bailout);
+
+        static_assert(base::bits::CountPopulation(kThinStringTagBit) == 1);
+        GotoIf(IsSetWord32(var_instance_type.value(), kThinStringTagBit),
+               &if_thinstring);
+
+        // Check if the hash field encodes a forwarding index.
+        GotoIf(IsEqualInWord32<Name::HashFieldTypeBits>(
+                   raw_hash_field, Name::HashFieldType::kForwardingIndex),
+               &if_forwarding_index);
+
+        // Finally, check if |key| is internalized.
+        static_assert(kNotInternalizedTag != 0);
+        GotoIf(IsSetWord32(var_instance_type.value(), kIsNotInternalizedMask),
+               if_notinternalized != nullptr ? if_notinternalized : if_bailout);
+
+        *var_unique = CAST(key);
         Goto(if_keyisunique);
-      }
-      BIND(&if_forwarding_index);
-      {
-        TNode<ExternalReference> function =
-            ExternalConstant(ExternalReference::string_from_forward_table());
-        const TNode<ExternalReference> isolate_ptr =
-            ExternalConstant(ExternalReference::isolate_address(isolate()));
-        TNode<Object> result = CAST(CallCFunction(
-            function, MachineType::AnyTagged(),
-            std::make_pair(MachineType::Pointer(), isolate_ptr),
-            std::make_pair(
-                MachineType::Int32(),
-                DecodeWord32<Name::ForwardingIndexValueBits>(raw_hash_field))));
 
-        *var_unique = CAST(result);
-        Goto(if_keyisunique);
-      }
+        BIND(&if_thinstring);
+        {
+          *var_unique =
+              LoadObjectField<String>(CAST(key), ThinString::kActualOffset);
+          Goto(if_keyisunique);
+        }
 
-      BIND(&if_has_cached_index);
-      {
-        TNode<IntPtrT> index = Signed(
-            DecodeWordFromWord32<String::ArrayIndexValueBits>(raw_hash_field));
-        CSA_DCHECK(this, IntPtrLessThan(index, IntPtrConstant(INT_MAX)));
-        *var_index = index;
-        Goto(if_keyisindex);
+        BIND(&if_forwarding_index);
+        {
+          Label if_external(this), if_internalized(this);
+          Branch(IsEqualInWord32<Name::IsExternalForwardingIndexBit>(
+                     raw_hash_field, true),
+                 &if_external, &if_internalized);
+          BIND(&if_external);
+          {
+            // We know nothing about external forwarding indices, so load the
+            // forwarded hash and check all possiblities again.
+            TNode<ExternalReference> function = ExternalConstant(
+                ExternalReference::raw_hash_from_forward_table());
+            const TNode<ExternalReference> isolate_ptr =
+                ExternalConstant(ExternalReference::isolate_address(isolate()));
+            TNode<Uint32T> result = UncheckedCast<Uint32T>(CallCFunction(
+                function, MachineType::Uint32(),
+                std::make_pair(MachineType::Pointer(), isolate_ptr),
+                std::make_pair(MachineType::Int32(),
+                               DecodeWord32<Name::ForwardingIndexValueBits>(
+                                   raw_hash_field))));
+
+            var_raw_hash = result;
+            Goto(&check_string_hash);
+          }
+
+          BIND(&if_internalized);
+          {
+            // Integer indices are not overwritten with internalized forwarding
+            // indices, so we are guaranteed forwarding to a unique name.
+            CSA_DCHECK(this,
+                       IsEqualInWord32<Name::IsExternalForwardingIndexBit>(
+                           raw_hash_field, false));
+            TNode<ExternalReference> function = ExternalConstant(
+                ExternalReference::string_from_forward_table());
+            const TNode<ExternalReference> isolate_ptr =
+                ExternalConstant(ExternalReference::isolate_address(isolate()));
+            TNode<Object> result = CAST(CallCFunction(
+                function, MachineType::AnyTagged(),
+                std::make_pair(MachineType::Pointer(), isolate_ptr),
+                std::make_pair(MachineType::Int32(),
+                               DecodeWord32<Name::ForwardingIndexValueBits>(
+                                   raw_hash_field))));
+
+            *var_unique = CAST(result);
+            Goto(if_keyisunique);
+          }
+        }
+
+        BIND(&if_has_cached_index);
+        {
+          TNode<IntPtrT> index =
+              Signed(DecodeWordFromWord32<String::ArrayIndexValueBits>(
+                  raw_hash_field));
+          CSA_DCHECK(this, IntPtrLessThan(index, IntPtrConstant(INT_MAX)));
+          *var_index = index;
+          Goto(if_keyisindex);
+        }
       }
     }
 
@@ -11423,7 +11465,7 @@ TNode<FeedbackVector> CodeStubAssembler::LoadFeedbackVectorForStub() {
 
 TNode<FeedbackVector> CodeStubAssembler::LoadFeedbackVectorFromBaseline() {
   return CAST(
-      LoadFromParentFrame(InterpreterFrameConstants::kBytecodeOffsetFromFp));
+      LoadFromParentFrame(BaselineFrameConstants::kFeedbackVectorFromFp));
 }
 
 TNode<Context> CodeStubAssembler::LoadContextFromBaseline() {
@@ -11504,8 +11546,7 @@ void CodeStubAssembler::ReportFeedbackUpdate(
 #ifdef V8_TRACE_FEEDBACK_UPDATES
   // Trace the update.
   CallRuntime(Runtime::kTraceUpdateFeedback, NoContextConstant(),
-              LoadFromParentFrame(StandardFrameConstants::kFunctionOffset),
-              SmiTag(Signed(slot_id)), StringConstant(reason));
+              feedback_vector, SmiTag(Signed(slot_id)), StringConstant(reason));
 #endif  // V8_TRACE_FEEDBACK_UPDATES
 }
 
@@ -11582,7 +11623,13 @@ TNode<IntPtrT> CodeStubAssembler::TryToIntptr(
   BIND(&key_is_heapnumber);
   {
     TNode<Float64T> value = LoadHeapNumberValue(CAST(key));
-    TNode<IntPtrT> int_value = ChangeFloat64ToIntPtr(value);
+#if V8_TARGET_ARCH_64_BIT
+    TNode<IntPtrT> int_value =
+        TNode<IntPtrT>::UncheckedCast(TruncateFloat64ToInt64(value));
+#else
+    TNode<IntPtrT> int_value =
+        TNode<IntPtrT>::UncheckedCast(RoundFloat64ToInt32(value));
+#endif
     GotoIfNot(Float64Equal(value, RoundIntPtrToFloat64(int_value)),
               if_not_intptr);
 #if V8_TARGET_ARCH_64_BIT
@@ -14719,7 +14766,8 @@ TNode<String> CodeStubAssembler::Typeof(TNode<Object> value) {
 
   Label return_number(this, Label::kDeferred), if_oddball(this),
       return_function(this), return_undefined(this), return_object(this),
-      return_string(this), return_bigint(this), return_result(this);
+      return_string(this), return_bigint(this), return_symbol(this),
+      return_result(this);
 
   GotoIf(TaggedIsSmi(value), &return_number);
 
@@ -14750,9 +14798,9 @@ TNode<String> CodeStubAssembler::Typeof(TNode<Object> value) {
 
   GotoIf(IsBigIntInstanceType(instance_type), &return_bigint);
 
-  CSA_DCHECK(this, InstanceTypeEqual(instance_type, SYMBOL_TYPE));
-  result_var = HeapConstant(isolate()->factory()->symbol_string());
-  Goto(&return_result);
+  GotoIf(IsSymbolInstanceType(instance_type), &return_symbol);
+
+  Abort(AbortReason::kUnexpectedInstanceType);
 
   BIND(&return_number);
   {
@@ -14795,6 +14843,12 @@ TNode<String> CodeStubAssembler::Typeof(TNode<Object> value) {
   BIND(&return_bigint);
   {
     result_var = HeapConstant(isolate()->factory()->bigint_string());
+    Goto(&return_result);
+  }
+
+  BIND(&return_symbol);
+  {
+    result_var = HeapConstant(isolate()->factory()->symbol_string());
     Goto(&return_result);
   }
 
@@ -16056,7 +16110,14 @@ TNode<Code> CodeStubAssembler::GetSharedFunctionInfoCode(
 }
 
 TNode<RawPtrT> CodeStubAssembler::LoadCodeInstructionStart(TNode<Code> code) {
-  return LoadCodeEntrypointFromObject(code, Code::kInstructionStartOffset);
+#ifdef V8_ENABLE_SANDBOX
+  // In this case, the entrypoint is stored in the code pointer table entry
+  // referenced via the Code object's 'self' indirect pointer.
+  return LoadCodeEntrypointViaIndirectPointerField(
+      code, Code::kSelfIndirectPointerOffset);
+#else
+  return LoadObjectField<RawPtrT>(code, Code::kInstructionStartOffset);
+#endif
 }
 
 TNode<BoolT> CodeStubAssembler::IsMarkedForDeoptimization(TNode<Code> code) {
@@ -16088,7 +16149,7 @@ TNode<JSFunction> CodeStubAssembler::AllocateFunctionWithMapAndContext(
                                  shared_info);
   StoreObjectFieldNoWriteBarrier(fun, JSFunction::kContextOffset, context);
   StoreMaybeIndirectPointerFieldNoWriteBarrier(fun, JSFunction::kCodeOffset,
-                                               code);
+                                               kCodeIndirectPointerTag, code);
   return CAST(fun);
 }
 

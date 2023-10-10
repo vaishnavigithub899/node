@@ -397,7 +397,7 @@ void FeedbackVector::SetOptimizedOsrCode(Isolate* isolate, FeedbackSlot slot,
   DCHECK(CodeKindIsOptimizedJSFunction(code->kind()));
   DCHECK(!slot.IsInvalid());
   auto current = GetOptimizedOsrCode(isolate, slot);
-  if (V8_UNLIKELY(current && current->kind() > code->kind())) {
+  if (V8_UNLIKELY(current && current.value()->kind() > code->kind())) {
     return;
   }
   Set(slot, HeapObjectReference::Weak(code));
@@ -471,6 +471,36 @@ bool FeedbackVector::ClearSlots(Isolate* isolate, ClearBehavior behavior) {
   }
   return feedback_updated;
 }
+
+#ifdef V8_TRACE_FEEDBACK_UPDATES
+
+// static
+void FeedbackVector::TraceFeedbackChange(Isolate* isolate,
+                                         Tagged<FeedbackVector> vector,
+                                         FeedbackSlot slot,
+                                         const char* reason) {
+  int slot_count = vector->metadata()->slot_count();
+  StdoutStream os;
+  if (slot.IsInvalid()) {
+    os << "[Feedback slots in ";
+  } else {
+    FeedbackSlotKind kind = vector->metadata()->GetKind(slot);
+    os << "[Feedback slot " << slot.ToInt() << "/" << slot_count << " ("
+       << FeedbackMetadata::Kind2String(kind) << ")"
+       << " in ";
+  }
+  ShortPrint(vector->shared_function_info(), os);
+  if (slot.IsInvalid()) {
+    os << " updated - ";
+  } else {
+    os << " updated to ";
+    vector->FeedbackSlotPrint(os, slot);
+    os << " - ";
+  }
+  os << reason << "]" << std::endl;
+}
+
+#endif
 
 MaybeObjectHandle NexusConfig::NewHandle(MaybeObject object) const {
   if (mode() == Mode::MainThread) {

@@ -456,7 +456,7 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
     .addLocals(kWasmI32, 1)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprRefTestDeprecated, sub_struct,
+      kGCPrefix, kExprRefTest, sub_struct,
 
       // These casts have to be preserved.
       kExprLocalGet, 0,
@@ -476,7 +476,8 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
         kExprBlock, kWasmRefNull, super_struct,
           kExprLocalGet, 0,
           // This should also get optimized away.
-          kGCPrefix, kExprBrOnCastFail, 0, mid_struct,
+          kGCPrefix, kExprBrOnCastFailGeneric, 0b11, 0, super_struct,
+              mid_struct,
           // So should this, despite being represented by a TypeGuard alias.
           kGCPrefix, kExprRefCast, sub_struct,
           kGCPrefix, kExprStructGet, sub_struct, 1,
@@ -587,7 +588,7 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
   builder.addFunction("mkStruct", makeSig([], [kWasmExternRef]))
     .addBody([kGCPrefix, kExprStructNewDefault, struct_a,
-              kGCPrefix, kExprExternExternalize])
+              kGCPrefix, kExprExternConvertAny])
     .exportFunc();
 
   let callee = builder.addFunction("callee", callee_sig)
@@ -597,8 +598,7 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
        kGCPrefix, kExprStructGet, struct_b, 0]);
 
   builder.addFunction("main", makeSig([kWasmExternRef], [kWasmI32]))
-    .addBody([kExprLocalGet, 0, kGCPrefix, kExprExternInternalize,
-              kGCPrefix, kExprRefAsStruct,
+    .addBody([kExprLocalGet, 0, kGCPrefix, kExprAnyConvertExtern,
               kGCPrefix, kExprRefCast, struct_a,
               kExprCallFunction, callee.index])
     .exportFunc();
@@ -638,6 +638,47 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
   builder.instantiate({});
 })();
 
+(function StructSetMultipleNullChecks() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let struct = builder.addStruct([makeField(kWasmI32, true),
+                                  makeField(kWasmI32, true)]);
+
+  builder.addFunction("structSetMultiple",
+                      makeSig([wasmRefNullType(struct)], []))
+    .addBody([
+      kExprLocalGet, 0,
+      kExprI32Const, 42,
+      kGCPrefix, kExprStructSet, struct, 0,
+      kExprLocalGet, 0,
+      kExprI32Const, 43,
+      kGCPrefix, kExprStructSet, struct, 1,
+    ])
+    .exportFunc();
+
+  let wasm = builder.instantiate({}).exports;
+  assertTraps(kTrapNullDereference, () => wasm.structSetMultiple(null));
+})();
+
+(function ArrayLenMultipleNullChecks() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let array = builder.addArray(kWasmI32, true);
+
+  builder.addFunction("arrayLenMultiple",
+                      makeSig([wasmRefNullType(array)], [kWasmI32, kWasmI32]))
+    .addBody([
+      kExprLocalGet, 0,
+      kGCPrefix, kExprArrayLen,
+      kExprLocalGet, 0,
+      kGCPrefix, kExprArrayLen,
+    ])
+    .exportFunc();
+
+  let wasm = builder.instantiate({}).exports;
+  assertTraps(kTrapNullDereference, () => wasm.arrayLenMultiple(null));
+})();
+
 (function RedundantExternalizeInternalize() {
   print(arguments.callee.name);
   let builder = new WasmModuleBuilder();
@@ -648,17 +689,17 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
     .addBody([
       kExprLocalGet, 0,
       kGCPrefix, kExprArrayNewFixed, array, 1,
-      kGCPrefix, kExprExternExternalize,
+      kGCPrefix, kExprExternConvertAny,
     ])
     .exportFunc();
 
   builder.addFunction('get', makeSig([kWasmExternRef, kWasmI32], [kWasmI32]))
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprExternInternalize,
+      kGCPrefix, kExprAnyConvertExtern,
       // The following two operations are optimized away.
-      kGCPrefix, kExprExternExternalize,
-      kGCPrefix, kExprExternInternalize,
+      kGCPrefix, kExprExternConvertAny,
+      kGCPrefix, kExprAnyConvertExtern,
       //
       kGCPrefix, kExprRefCastNull, array,
       kExprLocalGet, 1,
@@ -671,4 +712,121 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
   let wasmArray = wasm.createArray(10);
   assertEquals(10, wasm.get(wasmArray, 0));
+})();
+
+(function RedundantIsNull() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let array = builder.addArray(kWasmI32, true);
+
+  builder.addFunction('checkIsNullAfterNonNullCast',
+      makeSig([kWasmExternRef], [kWasmI32]))
+    .addBody([
+      kExprLocalGet, 0,
+      kGCPrefix, kExprRefCast, kExternRefCode,
+      kExprDrop,
+      kExprLocalGet, 0,
+      kExprRefIsNull,
+    ])
+    .exportFunc();
+
+  let instance = builder.instantiate({});
+  let wasm = instance.exports;
+
+  assertTraps(kTrapIllegalCast, () => wasm.checkIsNullAfterNonNullCast(null));
+  assertEquals(0, wasm.checkIsNullAfterNonNullCast("not null"));
+})();
+
+(function RefTestUnrelated() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let struct = builder.addStruct([makeField(kWasmI32, true)]);
+  let other = builder.addStruct([makeField(kWasmI64, true)]);
+
+  builder.addFunction('refTestUnrelatedNull',
+      makeSig([kWasmAnyRef], [kWasmI32]))
+    .addBody([
+      kExprLocalGet, 0,
+      kGCPrefix, kExprRefCastNull, other,
+      kExprDrop,
+      kExprLocalGet, 0,
+      // This ref.test will only succeed if the input is null.
+      kGCPrefix, kExprRefTestNull, struct,
+    ])
+    .exportFunc();
+
+    builder.addFunction('refTestUnrelated',
+    makeSig([kWasmAnyRef], [kWasmI32]))
+  .addBody([
+    kExprLocalGet, 0,
+    kGCPrefix, kExprRefCastNull, other,
+    kExprDrop,
+    kExprLocalGet, 0,
+    // This ref.test always returns 0.
+    kGCPrefix, kExprRefTest, struct,
+  ])
+  .exportFunc();
+
+  let instance = builder.instantiate({});
+  let wasm = instance.exports;
+
+  assertEquals(1, wasm.refTestUnrelatedNull(null));
+  assertTraps(kTrapIllegalCast, () => wasm.refTestUnrelatedNull("not null"));
+  assertEquals(0, wasm.refTestUnrelated(null));
+  assertTraps(kTrapIllegalCast, () => wasm.refTestUnrelated("not null"));
+})();
+
+(function RefFuncIsNull() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+
+  let fct = builder.addFunction('dummy', makeSig([], []))
+      .addBody([]).exportFunc();
+
+  builder.addFunction('refFuncIsNull',
+      makeSig([], [kWasmI32]))
+    .addLocals(kWasmFuncRef, 1)
+    .addBody([
+      kExprRefFunc, fct.index,
+      kExprLocalSet, 0,
+      kExprLocalGet, 0,
+      kExprRefIsNull,
+    ])
+    .exportFunc();
+
+  let instance = builder.instantiate({});
+  let wasm = instance.exports;
+
+  assertEquals(0, wasm.refFuncIsNull());
+})();
+
+
+(function ArrayNewRefTest() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let array_base = builder.addArray(kWasmI32, true);
+  let array_sub = builder.addArray(kWasmI32, true, array_base);
+  let array_other = builder.addArray(kWasmI64, true);
+
+  let fct = builder.addFunction('dummy', makeSig([], []))
+      .addBody([]).exportFunc();
+
+  builder.addFunction('arrayNewRefTest',
+      makeSig([], [kWasmI32, kWasmI32, kWasmI32]))
+    .addLocals(kWasmAnyRef, 1)
+    .addBody([
+      kExprI32Const, 42,
+      kGCPrefix, kExprArrayNewFixed, array_sub, 1,
+      kExprLocalSet, 0,
+      // All these checks can be statically inferred.
+      kExprLocalGet, 0, kGCPrefix, kExprRefTest, array_base,
+      kExprLocalGet, 0, kGCPrefix, kExprRefTest, array_sub,
+      kExprLocalGet, 0, kGCPrefix, kExprRefTest, array_other,
+    ])
+    .exportFunc();
+
+  let instance = builder.instantiate({});
+  let wasm = instance.exports;
+
+  assertEquals([1, 1, 0], wasm.arrayNewRefTest());
 })();

@@ -474,6 +474,26 @@ RUNTIME_FUNCTION(Runtime_BenchMaglev) {
 }
 #endif  // V8_ENABLE_MAGLEV
 
+RUNTIME_FUNCTION(Runtime_BenchTurbofan) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(args.length(), 2);
+  Handle<JSFunction> function = args.at<JSFunction>(0);
+  int count = args.smi_value_at(1);
+
+  base::ElapsedTimer timer;
+  timer.Start();
+  Compiler::CompileOptimized(isolate, function, ConcurrencyMode::kSynchronous,
+                             CodeKind::TURBOFAN);
+  for (int i = 1; i < count; ++i) {
+    Compiler::CompileOptimized(isolate, function, ConcurrencyMode::kSynchronous,
+                               CodeKind::TURBOFAN);
+  }
+
+  double compile_time = timer.Elapsed().InMillisecondsF() / count;
+
+  return *isolate->factory()->NewNumber(compile_time);
+}
+
 RUNTIME_FUNCTION(Runtime_ActiveTierIsIgnition) {
   HandleScope scope(isolate);
   DCHECK_EQ(args.length(), 1);
@@ -1107,13 +1127,13 @@ int FixedArrayLenFromSize(int size) {
 }
 
 int GetSpaceRemainingOnCurrentPage(v8::internal::NewSpace* space) {
-  Address top = space->top();
+  const Address top = space->heap()->NewSpaceTop();
   if ((top & kPageAlignmentMask) == 0) {
     // `top` points to the start of a page signifies that there is not room in
     // the current page.
     return 0;
   }
-  return static_cast<int>(Page::FromAddress(space->top())->area_end() - top);
+  return static_cast<int>(Page::FromAddress(top)->area_end() - top);
 }
 
 void FillUpOneNewSpacePage(Isolate* isolate, Heap* heap) {
@@ -1130,7 +1150,7 @@ void FillUpOneNewSpacePage(Isolate* isolate, Heap* heap) {
       space_remaining -= padding->Size();
     } else {
       // Not enough room to create another fixed array. Create a filler.
-      heap->CreateFillerObjectAt(*heap->new_space()->allocation_top_address(),
+      heap->CreateFillerObjectAt(*heap->NewSpaceAllocationTopAddress(),
                                  space_remaining);
       break;
     }
@@ -1472,7 +1492,7 @@ RUNTIME_FUNCTION(Runtime_AbortJS) {
   Handle<String> message = args.at<String>(0);
   if (v8_flags.disable_abortjs) {
     base::OS::PrintError("[disabled] abort: %s\n", message->ToCString().get());
-    return Object();
+    return Tagged<Object>();
   }
   base::OS::PrintError("abort: %s\n", message->ToCString().get());
   isolate->PrintStack(stderr);
@@ -1880,14 +1900,6 @@ RUNTIME_FUNCTION(Runtime_ArrayBufferMaxByteLength) {
   return *isolate->factory()->NewNumber(JSArrayBuffer::kMaxByteLength);
 }
 
-RUNTIME_FUNCTION(Runtime_TypedArrayMaxLength) {
-  HandleScope shs(isolate);
-  if (args.length() != 0) {
-    return CrashUnlessFuzzing(isolate);
-  }
-  return *isolate->factory()->NewNumber(JSTypedArray::kMaxLength);
-}
-
 RUNTIME_FUNCTION(Runtime_CompleteInobjectSlackTracking) {
   HandleScope scope(isolate);
   if (args.length() != 1) {
@@ -2017,6 +2029,21 @@ RUNTIME_FUNCTION(Runtime_IsSharedString) {
   Handle<HeapObject> obj = args.at<HeapObject>(0);
   return isolate->heap()->ToBoolean(IsString(*obj) &&
                                     Handle<String>::cast(obj)->IsShared());
+}
+
+RUNTIME_FUNCTION(Runtime_ShareObject) {
+  HandleScope scope(isolate);
+  if (args.length() != 1) {
+    return CrashUnlessFuzzing(isolate);
+  }
+  Handle<HeapObject> obj = args.at<HeapObject>(0);
+  ShouldThrow should_throw = v8_flags.fuzzing ? kDontThrow : kThrowOnError;
+  MaybeHandle<Object> maybe_shared = Object::Share(isolate, obj, should_throw);
+  Handle<Object> shared;
+  if (!maybe_shared.ToHandle(&shared)) {
+    return CrashUnlessFuzzing(isolate);
+  }
+  return *shared;
 }
 
 RUNTIME_FUNCTION(Runtime_IsInPlaceInternalizableString) {

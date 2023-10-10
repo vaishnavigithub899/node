@@ -189,8 +189,13 @@ class ScopeChainRetriever {
     // context on the stack with a range that starts at Token::CLASS, and the
     // source position will also point to Token::CLASS.  To identify the
     // matching scope we include start in the accepted range for class scopes.
+    //
+    // Similarly "with" scopes can already have bytecodes where the source
+    // position points to the closing parenthesis with the "with" context
+    // already pushed.
     const bool position_fits_start =
-        scope->is_class_scope() ? start <= position_ : start < position_;
+        scope->is_class_scope() || scope->is_with_scope() ? start <= position_
+                                                          : start < position_;
     return position_fits_start && position_fits_end;
   }
 };
@@ -405,8 +410,7 @@ bool ScopeIterator::NeedsContext() const {
   // context should the function need one. In that case the function has already
   // pushed the context and we are good.
   CHECK_IMPLIES(needs_context && current_scope_ == closure_scope_ &&
-                    current_scope_->is_function_scope() &&
-                    !function_->is_null(),
+                    current_scope_->is_function_scope() && !function_.is_null(),
                 function_->context() != *context_);
 
   return needs_context;
@@ -607,8 +611,8 @@ Handle<JSObject> ScopeIterator::ScopeObject(Mode mode) {
     }
     // Overwrite properties. Sometimes names in the same scope can collide, e.g.
     // with extension objects introduced via local eval.
-    JSObject::SetPropertyOrElement(isolate_, scope, name, value,
-                                   Just(ShouldThrow::kDontThrow))
+    Object::SetPropertyOrElement(isolate_, scope, name, value,
+                                 Just(ShouldThrow::kDontThrow))
         .Check();
     return false;
   };

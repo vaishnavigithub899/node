@@ -301,8 +301,7 @@ namespace internal {
   F(NumberToStringSlow, 1, 1)            \
   F(StringParseFloat, 1, 1)              \
   F(StringParseInt, 2, 1)                \
-  F(StringToNumber, 1, 1)                \
-  F(TypedArrayMaxLength, 0, 1)
+  F(StringToNumber, 1, 1)
 
 #define FOR_EACH_INTRINSIC_OBJECT(F, I)                                \
   F(AddDictionaryProperty, 3, 1)                                       \
@@ -505,6 +504,7 @@ namespace internal {
   F(ArraySpeciesProtector, 0, 1)              \
   F(BaselineOsr, -1, 1)                       \
   F(BenchMaglev, 2, 1)                        \
+  F(BenchTurbofan, 2, 1)                      \
   F(ClearFunctionFeedback, 1, 1)              \
   F(ClearMegamorphicStubCache, 0, 1)          \
   F(CompleteInobjectSlackTracking, 1, 1)      \
@@ -600,6 +600,7 @@ namespace internal {
   F(SetForceSlowPath, 1, 1)                   \
   F(SetIteratorProtector, 0, 1)               \
   F(SharedGC, 0, 1)                           \
+  F(ShareObject, 1, 1)                        \
   F(SimulateNewspaceFull, 0, 1)               \
   F(StringIteratorProtector, 0, 1)            \
   F(SystemBreak, 0, 1)                        \
@@ -634,6 +635,8 @@ namespace internal {
   F(WasmReThrow, 1, 1)                        \
   F(WasmThrowJSTypeError, 0, 1)               \
   F(WasmThrowTypeError, 2, 1)                 \
+  F(WasmThrowTypeErrorTwoArgs, 3, 1)          \
+  F(WasmThrowRangeError, 1, 1)                \
   F(WasmRefFunc, 1, 1)                        \
   F(WasmInternalFunctionCreateExternal, 1, 1) \
   F(WasmFunctionTableGet, 3, 1)               \

@@ -19,12 +19,12 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertEquals(2, type.minimum);
   assertEquals(15, type.maximum);
   assertEquals(false, type.shared);
-  assertEquals("u32", type.index);
+  assertEquals("i32", type.index);
   assertEquals(4, Object.getOwnPropertyNames(type).length);
 
-  mem = new WebAssembly.Memory({initial: 2, maximum: 15, index: "u64"});
+  mem = new WebAssembly.Memory({initial: 2, maximum: 15, index: "i64"});
   type = mem.type();
-  assertEquals("u64", type.index);
+  assertEquals("i64", type.index);
 })();
 
 (function TestMemoryExports() {
@@ -240,7 +240,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   let type = mem.type();
   assertEquals(1, type.minimum);
   assertEquals(false, type.shared);
-  assertEquals("u32", type.index);
+  assertEquals("i32", type.index);
   assertEquals(3, Object.getOwnPropertyNames(type).length);
 
   mem = new WebAssembly.Memory({minimum: 1, maximum: 5, shared: false});
@@ -249,7 +249,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertEquals(1, type.minimum);
   assertEquals(5, type.maximum);
   assertEquals(false, type.shared);
-  assertEquals("u32", type.index);
+  assertEquals("i32", type.index);
   assertEquals(4, Object.getOwnPropertyNames(type).length);
 
   mem = new WebAssembly.Memory({initial: 1, maximum: 5, shared: true});
@@ -258,7 +258,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertEquals(1, type.minimum);
   assertEquals(5, type.maximum);
   assertEquals(true, type.shared);
-  assertEquals("u32", type.index);
+  assertEquals("i32", type.index);
   assertEquals(4, Object.getOwnPropertyNames(type).length);
 
   assertThrows(
@@ -388,7 +388,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
     set: function(obj, prop, val) { assertUnreachable(); }
   });
   let fun = new WebAssembly.Function({parameters:logger, results:[]}, _ => 0);
-  assertArrayEquals(["i32", "f32"], WebAssembly.Function.type(fun).parameters);
+  assertArrayEquals(["i32", "f32"], fun.type().parameters);
   assertArrayEquals(["length", "0", "1"], log);
 })();
 
@@ -459,7 +459,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   ];
   testcases.forEach(function(expected) {
     let fun = new WebAssembly.Function(expected, _ => 0);
-    let type = WebAssembly.Function.type(fun);
+    let type = fun.type();
     assertEquals(expected, type)
   });
 })();
@@ -477,7 +477,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
     let builder = new WasmModuleBuilder();
     builder.addFunction("fun", sig).addBody([kExprUnreachable]).exportFunc();
     let instance = builder.instantiate();
-    let type = WebAssembly.Function.type(instance.exports.fun);
+    let type = instance.exports.fun.type();
     assertEquals(expected, type)
   });
 })();

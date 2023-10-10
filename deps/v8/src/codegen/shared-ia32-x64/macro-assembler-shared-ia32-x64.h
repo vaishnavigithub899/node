@@ -763,6 +763,7 @@ class V8_EXPORT_PRIVATE SharedMacroAssembler : public SharedMacroAssemblerBase {
               ExternalReference::address_of_wasm_double_2_power_52(), tmp));
     // Extract low 32 bits of each double's significand, zero top lanes.
     // dst = [dst[0], dst[2], 0, 0]
+    Xorps(scratch, scratch, scratch);
     Shufps(dst, dst, scratch, 0x88);
   }
 
@@ -771,6 +772,17 @@ class V8_EXPORT_PRIVATE SharedMacroAssembler : public SharedMacroAssemblerBase {
     ASM_CODE_COMMENT(this);
     Operand int32_overflow_op = ExternalReferenceAsOperand(
         ExternalReference::address_of_wasm_int32_overflow_as_float(), scratch);
+
+    // NAN->0, negative->0.
+    Pxor(tmp, tmp);
+    if (CpuFeatures::IsSupported(AVX)) {
+      CpuFeatureScope scope(this, AVX);
+      vmaxps(dst, src, tmp);
+    } else {
+      if (dst != src) movaps(dst, src);
+      maxps(dst, tmp);
+    }
+
     if (CpuFeatures::IsSupported(AVX)) {
       CpuFeatureScope avx_scope(this, AVX);
       vcmpltps(tmp, src, int32_overflow_op);

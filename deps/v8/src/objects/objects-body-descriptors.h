@@ -18,7 +18,8 @@ namespace internal {
 // 1) Iterate object's body using stateful object visitor.
 //
 //   template <typename ObjectVisitor>
-//   static inline void IterateBody(Map map, HeapObject obj, int object_size,
+//   static inline void IterateBody(Tagged<Map> map, HeapObject obj, int
+//   object_size,
 //                                  ObjectVisitor* v);
 class BodyDescriptorBase {
  public:
@@ -56,9 +57,15 @@ class BodyDescriptorBase {
   // Visits a field that contains either an indirect pointer (if the sandbox is
   // enabled) or a regular/tagged pointer (otherwise).
   template <typename ObjectVisitor>
-  static void IterateMaybeIndirectPointer(Tagged<HeapObject> obj, int offset,
-                                          ObjectVisitor* visitor,
-                                          IndirectPointerMode mode);
+  static inline void IterateMaybeIndirectPointer(Tagged<HeapObject> obj,
+                                                 int offset,
+                                                 ObjectVisitor* visitor,
+                                                 IndirectPointerMode mode,
+                                                 IndirectPointerTag tag);
+  template <typename ObjectVisitor>
+  static inline void IterateSelfIndirectPointer(Tagged<HeapObject> obj,
+                                                IndirectPointerTag tag,
+                                                ObjectVisitor* v);
 
  protected:
   // Returns true for all header and embedder fields.

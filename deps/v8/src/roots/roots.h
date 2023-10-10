@@ -97,6 +97,7 @@ class RootVisitor;
   V(Oddball, stale_register, StaleRegister)                                    \
   /* Holes */                                                                  \
   V(Hole, property_cell_hole_value, PropertyCellHoleValue)                     \
+  V(Hole, hash_table_hole_value, HashTableHoleValue)                           \
   /* Maps */                                                                   \
   V(Map, script_context_table_map, ScriptContextTableMap)                      \
   V(Map, closure_feedback_cell_array_map, ClosureFeedbackCellArrayMap)         \
@@ -326,7 +327,15 @@ class RootVisitor;
   V(SharedFunctionInfo, source_text_module_execute_async_module_fulfilled_sfi, \
     SourceTextModuleExecuteAsyncModuleFulfilledSFI)                            \
   V(SharedFunctionInfo, source_text_module_execute_async_module_rejected_sfi,  \
-    SourceTextModuleExecuteAsyncModuleRejectedSFI)
+    SourceTextModuleExecuteAsyncModuleRejectedSFI)                             \
+  V(SharedFunctionInfo, array_from_async_iterable_on_fulfilled_shared_fun,     \
+    ArrayFromAsyncIterableOnFulfilledSharedFun)                                \
+  V(SharedFunctionInfo, array_from_async_iterable_on_rejected_shared_fun,      \
+    ArrayFromAsyncIterableOnRejectedSharedFun)                                 \
+  V(SharedFunctionInfo, array_from_async_array_like_on_fulfilled_shared_fun,   \
+    ArrayFromAsyncArrayLikeOnFulfilledSharedFun)                               \
+  V(SharedFunctionInfo, array_from_async_array_like_on_rejected_shared_fun,    \
+    ArrayFromAsyncArrayLikeOnRejectedSharedFun)
 
 // These root references can be updated by the mutator.
 #define STRONG_MUTABLE_MOVABLE_ROOT_LIST(V)                                 \

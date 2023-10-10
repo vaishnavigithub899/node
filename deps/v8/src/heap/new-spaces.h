@@ -44,7 +44,7 @@ class SemiSpace final : public Space {
   static void Swap(SemiSpace* from, SemiSpace* to);
 
   SemiSpace(Heap* heap, SemiSpaceId semispace)
-      : Space(heap, NEW_SPACE, nullptr, allocation_counter_), id_(semispace) {}
+      : Space(heap, NEW_SPACE, nullptr), id_(semispace) {}
 
   inline bool Contains(Tagged<HeapObject> o) const;
   inline bool Contains(Tagged<Object> o) const;
@@ -103,9 +103,6 @@ class SemiSpace final : public Space {
   void RemovePage(Page* page);
   void PrependPage(Page* page);
   void MovePageToTheEnd(Page* page);
-
-  void PauseAllocationObservers() override { UNREACHABLE(); }
-  void ResumeAllocationObservers() override { UNREACHABLE(); }
 
   Page* InitializePage(MemoryChunk* chunk) final;
 
@@ -200,7 +197,6 @@ class SemiSpace final : public Space {
   size_t committed_physical_memory_ = 0;
   SemiSpaceId id_;
   Page* current_page_ = nullptr;
-  AllocationCounter allocation_counter_;
 
   friend class SemiSpaceNewSpace;
   friend class SemiSpaceObjectIterator;
@@ -225,21 +221,13 @@ class NewSpace : NON_EXPORTED_BASE(public SpaceWithLinearArea) {
   using iterator = PageIterator;
   using const_iterator = ConstPageIterator;
 
-  NewSpace(Heap* heap, LinearAllocationArea& allocation_info);
+  explicit NewSpace(Heap* heap);
+
+  base::Mutex* mutex() { return &mutex_; }
 
   inline bool Contains(Tagged<Object> o) const;
   inline bool Contains(Tagged<HeapObject> o) const;
   virtual bool ContainsSlow(Address a) const = 0;
-
-#if DEBUG
-  void VerifyTop() const override;
-#endif  // DEBUG
-
-  V8_WARN_UNUSED_RESULT inline AllocationResult AllocateRawSynchronized(
-      int size_in_bytes, AllocationAlignment alignment,
-      AllocationOrigin origin = AllocationOrigin::kRuntime);
-
-  void MaybeFreeUnusedLab(LinearAllocationArea info);
 
   size_t ExternalBackingStoreOverallBytes() const {
     size_t result = 0;
@@ -259,9 +247,6 @@ class NewSpace : NON_EXPORTED_BASE(public SpaceWithLinearArea) {
 
   // Grow the capacity of the space.
   virtual void Grow() = 0;
-
-  // Creates a filler object in the linear allocation area.
-  virtual void MakeLinearAllocationAreaIterable() = 0;
 
   virtual void MakeIterable() = 0;
 
@@ -288,12 +273,7 @@ class NewSpace : NON_EXPORTED_BASE(public SpaceWithLinearArea) {
 
   base::Mutex mutex_;
 
-  AllocationCounter allocation_counter_;
-  LinearAreaOriginalData linear_area_original_data_;
-
   virtual void RemovePage(Page* page) = 0;
-
-  bool SupportsAllocationObserver() const final { return true; }
 };
 
 // -----------------------------------------------------------------------------
@@ -313,8 +293,7 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
   }
 
   SemiSpaceNewSpace(Heap* heap, size_t initial_semispace_capacity,
-                    size_t max_semispace_capacity,
-                    LinearAllocationArea& allocation_info);
+                    size_t max_semispace_capacity);
 
   ~SemiSpaceNewSpace() final;
 
@@ -329,10 +308,10 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
 
   // Return the allocated bytes in the active semispace.
   size_t Size() const final {
-    DCHECK_GE(top(), to_space_.page_low());
+    DCHECK_GE(allocator_->top(), to_space_.page_low());
     return (to_space_.current_capacity() - Page::kPageSize) / Page::kPageSize *
                MemoryChunkLayout::AllocatableMemoryInDataPage() +
-           static_cast<size_t>(top() - to_space_.page_low());
+           static_cast<size_t>(allocator_->top() - to_space_.page_low());
   }
 
   size_t SizeOfObjects() const final { return Size(); }
@@ -394,10 +373,6 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
     return to_space_.minimum_capacity();
   }
 
-#if DEBUG
-  void VerifyTop() const final;
-#endif  // DEBUG
-
   // Return the address of the first allocatable address in the active
   // semispace. This may be the address where the first object resides.
   Address first_allocatable_address() const final {
@@ -409,14 +384,6 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
   // Set the age mark in the active semispace.
   void set_age_mark(Address mark) { to_space_.set_age_mark(mark); }
 
-  // When inline allocation stepping is active, either because of incremental
-  // marking, idle scavenge, or allocation statistics gathering, we 'interrupt'
-  // inline allocation every once in a while. This is done by setting
-  // allocation_info_.limit to be lower than the actual limit and and increasing
-  // it in steps to guarantee that the observers are notified periodically.
-  void UpdateInlineAllocationLimit() final;
-  void UpdateInlineAllocationLimitForAllocation(size_t size_in_bytes);
-
   // Try to switch the active semispace to a new, empty, page.
   // Returns false if this isn't possible or reasonable (i.e., there
   // are no pages, or the current page is already empty), or true
@@ -427,9 +394,6 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
                                  AllocationAlignment alignment);
 
   void ResetParkedAllocationBuffers();
-
-  // Creates a filler object in the linear allocation area and closes it.
-  void FreeLinearAllocationArea() final;
 
 #ifdef VERIFY_HEAP
   // Verify the active semispace.
@@ -480,7 +444,10 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
 
   bool IsPromotionCandidate(const MemoryChunk* page) const final;
 
-  void MakeLinearAllocationAreaIterable() final;
+  // Update linear allocation area to match the current to-space page.
+  void UpdateLinearAllocationArea(Address known_top = 0);
+
+  AllocatorPolicy* CreateAllocatorPolicy(MainAllocator* allocator) final;
 
  private:
   bool IsFromSpaceCommitted() const { return from_space_.IsCommitted(); }
@@ -490,8 +457,19 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
   // Reset the allocation pointer to the beginning of the active semispace.
   void ResetLinearAllocationArea();
 
-  // Update linear allocation area to match the current to-space page.
-  void UpdateLinearAllocationArea(Address known_top = 0);
+  bool EnsureAllocation(int size_in_bytes, AllocationAlignment alignment,
+                        AllocationOrigin origin, int* out_max_aligned_size);
+
+  // Creates a filler object in the linear allocation area and closes it.
+  void FreeLinearAllocationArea();
+
+  // When inline allocation stepping is active, either because of incremental
+  // marking, idle scavenge, or allocation statistics gathering, we 'interrupt'
+  // inline allocation every once in a while. This is done by setting
+  // allocation_info_.limit to be lower than the actual limit and and increasing
+  // it in steps to guarantee that the observers are notified periodically.
+  void UpdateInlineAllocationLimit();
+  void UpdateInlineAllocationLimitForAllocation(size_t size_in_bytes);
 
   // Removes a page from the space. Assumes the page is in the `from_space` semi
   // space.
@@ -504,11 +482,8 @@ class V8_EXPORT_PRIVATE SemiSpaceNewSpace final : public NewSpace {
 
   ParkedAllocationBuffersVector parked_allocation_buffers_;
 
-  bool EnsureAllocation(int size_in_bytes, AllocationAlignment alignment,
-                        AllocationOrigin origin,
-                        int* out_max_aligned_size) final;
-
   friend class SemiSpaceObjectIterator;
+  friend class SemiSpaceNewSpaceAllocatorPolicy;
 };
 
 // -----------------------------------------------------------------------------
@@ -518,11 +493,8 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
  public:
   // Creates an old space object. The constructor does not allocate pages
   // from OS.
-  explicit PagedSpaceForNewSpace(
-      Heap* heap, size_t initial_capacity, size_t max_capacity,
-      AllocationCounter& allocation_counter,
-      LinearAllocationArea& allocation_info,
-      LinearAreaOriginalData& linear_area_original_data);
+  explicit PagedSpaceForNewSpace(Heap* heap, size_t initial_capacity,
+                                 size_t max_capacity);
 
   void TearDown() { PagedSpaceBase::TearDown(); }
 
@@ -534,7 +506,8 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
   void FinishShrinking();
 
   size_t AllocatedSinceLastGC() const {
-    return Size() - size_at_last_gc_ - (original_limit_relaxed() - top());
+    return Size() - size_at_last_gc_ -
+           (allocator_->original_limit_relaxed() - allocator_->top());
   }
 
   // Return the maximum capacity of the space.
@@ -555,12 +528,17 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
     last_lab_page_ = nullptr;
   }
 
+  bool EnsureAllocation(int size_in_bytes, AllocationAlignment alignment,
+                        AllocationOrigin origin, int* out_max_aligned_size);
+
   // When inline allocation stepping is active, either because of incremental
   // marking, idle scavenge, or allocation statistics gathering, we 'interrupt'
   // inline allocation every once in a while. This is done by setting
   // allocation_info_.limit to be lower than the actual limit and and increasing
   // it in steps to guarantee that the observers are notified periodically.
-  void UpdateInlineAllocationLimit() final;
+  void UpdateInlineAllocationLimit();
+
+  void FreeLinearAllocationArea();
 
   // Try to switch the active semispace to a new, empty, page.
   // Returns false if this isn't possible or reasonable (i.e., there
@@ -568,15 +546,9 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
   // if successful.
   bool AddFreshPage();
 
-  bool EnsureAllocation(int size_in_bytes, AllocationAlignment alignment,
-                        AllocationOrigin origin,
-                        int* out_max_aligned_size) final;
-
   bool EnsureCurrentCapacity() { return true; }
 
   Page* InitializePage(MemoryChunk* chunk) final;
-
-  void FreeLinearAllocationArea() final;
 
   size_t AddPage(Page* page) final;
   void RemovePage(Page* page) final;
@@ -605,15 +577,20 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
 
   // Return the available bytes without growing.
   size_t Available() const final {
-    return PagedSpaceBase::Available() + limit() - top();
+    return PagedSpaceBase::Available() + allocator_->limit() -
+           allocator_->top();
   }
 
- private:
   size_t UsableCapacity() const {
     DCHECK_LE(free_list_->wasted_bytes(), current_capacity_);
     return current_capacity_ - free_list_->wasted_bytes();
   }
 
+  AllocatorPolicy* CreateAllocatorPolicy(MainAllocator* allocator) final {
+    UNREACHABLE();
+  }
+
+ private:
   bool AllocatePage();
 
   const size_t initial_capacity_;
@@ -624,6 +601,7 @@ class V8_EXPORT_PRIVATE PagedSpaceForNewSpace final : public PagedSpaceBase {
   Page* last_lab_page_ = nullptr;
 
   bool force_allocation_success_ = false;
+  bool should_exceed_target_capacity_ = false;
 };
 
 // TODO(v8:12612): PagedNewSpace is a bridge between the NewSpace interface and
@@ -636,8 +614,7 @@ class V8_EXPORT_PRIVATE PagedNewSpace final : public NewSpace {
     return static_cast<PagedNewSpace*>(space);
   }
 
-  PagedNewSpace(Heap* heap, size_t initial_capacity, size_t max_capacity,
-                LinearAllocationArea& allocation_info);
+  PagedNewSpace(Heap* heap, size_t initial_capacity, size_t max_capacity);
 
   ~PagedNewSpace() final;
 
@@ -694,23 +671,10 @@ class V8_EXPORT_PRIVATE PagedNewSpace final : public NewSpace {
     return paged_space_.MaximumCapacity();
   }
 
-#if DEBUG
-  void VerifyTop() const final { NewSpace::VerifyTop(); }
-#endif  // DEBUG
-
   // Return the address of the first allocatable address in the active
   // semispace. This may be the address where the first object resides.
   Address first_allocatable_address() const final {
     return paged_space_.first_allocatable_address();
-  }
-
-  // When inline allocation stepping is active, either because of incremental
-  // marking, idle scavenge, or allocation statistics gathering, we 'interrupt'
-  // inline allocation every once in a while. This is done by setting
-  // allocation_info_.limit to be lower than the actual limit and and increasing
-  // it in steps to guarantee that the observers are notified periodically.
-  void UpdateInlineAllocationLimit() final {
-    paged_space_.UpdateInlineAllocationLimit();
   }
 
   // Try to switch the active semispace to a new, empty, page.
@@ -718,10 +682,6 @@ class V8_EXPORT_PRIVATE PagedNewSpace final : public NewSpace {
   // are no pages, or the current page is already empty), or true
   // if successful.
   bool AddFreshPage() final { return paged_space_.AddFreshPage(); }
-
-  void FreeLinearAllocationArea() final {
-    paged_space_.FreeLinearAllocationArea();
-  }
 
 #ifdef VERIFY_HEAP
   // Verify the active semispace.
@@ -763,10 +723,6 @@ class V8_EXPORT_PRIVATE PagedNewSpace final : public NewSpace {
     return paged_space_.EnsureCurrentCapacity();
   }
 
-  void MakeLinearAllocationAreaIterable() final {
-    paged_space_.MakeLinearAllocationAreaIterable();
-  }
-
   PagedSpaceForNewSpace* paged_space() { return &paged_space_; }
 
   void MakeIterable() override { paged_space_.MakeIterable(); }
@@ -783,17 +739,31 @@ class V8_EXPORT_PRIVATE PagedNewSpace final : public NewSpace {
     paged_space_.ForceAllocationSuccessUntilNextGC();
   }
 
+  AllocatorPolicy* CreateAllocatorPolicy(MainAllocator* allocator) final;
+
  private:
   bool EnsureAllocation(int size_in_bytes, AllocationAlignment alignment,
-                        AllocationOrigin origin,
-                        int* out_max_aligned_size) final {
+                        AllocationOrigin origin, int* out_max_aligned_size) {
     return paged_space_.EnsureAllocation(size_in_bytes, alignment, origin,
                                          out_max_aligned_size);
   }
 
+  // When inline allocation stepping is active, either because of incremental
+  // marking, idle scavenge, or allocation statistics gathering, we 'interrupt'
+  // inline allocation every once in a while. This is done by setting
+  // allocation_info_.limit to be lower than the actual limit and and increasing
+  // it in steps to guarantee that the observers are notified periodically.
+  void UpdateInlineAllocationLimit() {
+    paged_space_.UpdateInlineAllocationLimit();
+  }
+
+  void FreeLinearAllocationArea() { paged_space_.FreeLinearAllocationArea(); }
+
   void RemovePage(Page* page) final { paged_space_.RemovePage(page); }
 
   PagedSpaceForNewSpace paged_space_;
+
+  friend class PagedNewSpaceAllocatorPolicy;
 };
 
 // For contiguous spaces, top should be in the space (or at the end) and limit

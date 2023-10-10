@@ -5,10 +5,12 @@
 #ifndef V8_COMPILER_TURBOSHAFT_LATE_LOAD_ELIMINATION_REDUCER_H_
 #define V8_COMPILER_TURBOSHAFT_LATE_LOAD_ELIMINATION_REDUCER_H_
 
+#include "src/compiler/turboshaft/analyzer-iterator.h"
 #include "src/compiler/turboshaft/assembler.h"
 #include "src/compiler/turboshaft/doubly-threaded-list.h"
 #include "src/compiler/turboshaft/graph.h"
-#include "src/compiler/turboshaft/snapshot-table.h"
+#include "src/compiler/turboshaft/loop-finder.h"
+#include "src/compiler/turboshaft/snapshot-table-opindex.h"
 #include "src/compiler/turboshaft/utils.h"
 #include "src/zone/zone.h"
 
@@ -165,63 +167,9 @@ inline bool CouldHaveSameMap(MapMaskAndOr a, MapMaskAndOr b) {
   return ((a.and_ & b.or_) == a.and_) || ((b.and_ & a.or_) == b.and_);
 }
 
-// A Wrapper around a SnapshotTable, which takes care of mapping OpIndex to Key.
-// It uses a ZoneUnorderedMap to store this mapping, and is thus more
-// appropriate for cases where not many OpIndex have a corresponding key.
-template <class Value, class KeyData = NoKeyData>
-class SparseOpIndexSnapshotTable : public SnapshotTable<Value, KeyData> {
- public:
-  using Base = SnapshotTable<Value, KeyData>;
-  using Key = typename SnapshotTable<Value, KeyData>::Key;
-
-  SparseOpIndexSnapshotTable(const Graph& graph, Zone* zone)
-      : Base(zone), indices_to_keys_(zone) {}
-
-  using Base::Get;
-  Value Get(OpIndex idx) const {
-    auto it = indices_to_keys_.find(idx);
-    if (it == indices_to_keys_.end()) return Value{};
-    return Base::Get(it->second);
-  }
-
-  using Base::Set;
-  bool Set(OpIndex idx, Value new_value) {
-    Key key = GetOrCreateKey(idx);
-    return Base::Set(key, new_value);
-  }
-
-  void NewKey(OpIndex idx, KeyData data, Value initial_value = Value{}) {
-    DCHECK(!indices_to_keys_[idx].has_value());
-    indices_to_keys_[idx] = Base::NewKey(data, initial_value);
-  }
-  void NewKey(OpIndex idx, Value initial_value = Value{}) {
-    NewKey(idx, KeyData{}, initial_value);
-  }
-
-  bool HasKeyFor(OpIndex idx) const {
-    return indices_to_keys_.find(idx) != indices_to_keys_.end();
-  }
-
-  base::Optional<Key> TryGetKeyFor(OpIndex idx) const {
-    auto it = indices_to_keys_.find(idx);
-    if (it != indices_to_keys_.end()) return it->second;
-    return base::nullopt;
-  }
-
- private:
-  Key GetOrCreateKey(OpIndex idx) {
-    auto it = indices_to_keys_.find(idx);
-    if (it != indices_to_keys_.end()) return it->second;
-    Key key = Base::NewKey();
-    indices_to_keys_.insert({idx, key});
-    return key;
-  }
-  ZoneUnorderedMap<OpIndex, Key> indices_to_keys_;
-};
-
 struct MemoryAddress {
   OpIndex base;
-  OpIndex index;
+  OptionalOpIndex index;
   int32_t offset;
   uint8_t element_size_log2;
   uint8_t size;
@@ -309,7 +257,7 @@ class MemoryContentTable
     Invalidate(store.base(), store.index(), store.offset);
   }
 
-  void Invalidate(OpIndex base, OpIndex index, int32_t offset) {
+  void Invalidate(OpIndex base, OptionalOpIndex index, int32_t offset) {
     base = ResolveBase(base);
 
     if (non_aliasing_objects_.Get(base)) {
@@ -394,7 +342,7 @@ class MemoryContentTable
 
   OpIndex Find(const LoadOp& load) {
     OpIndex base = ResolveBase(load.base());
-    OpIndex index = load.index();
+    OptionalOpIndex index = load.index();
     int32_t offset = load.offset;
     uint8_t element_size_log2 = index.valid() ? load.element_size_log2 : 0;
     uint8_t size = load.loaded_rep.SizeInBytes();
@@ -407,7 +355,7 @@ class MemoryContentTable
 
   void Insert(const StoreOp& store) {
     OpIndex base = ResolveBase(store.base());
-    OpIndex index = store.index();
+    OptionalOpIndex index = store.index();
     int32_t offset = store.offset;
     uint8_t element_size_log2 = index.valid() ? store.element_size_log2 : 0;
     OpIndex value = store.value();
@@ -422,7 +370,7 @@ class MemoryContentTable
 
   void Insert(const LoadOp& load, OpIndex load_idx) {
     OpIndex base = ResolveBase(load.base());
-    OpIndex index = load.index();
+    OptionalOpIndex index = load.index();
     int32_t offset = load.offset;
     uint8_t element_size_log2 = index.valid() ? load.element_size_log2 : 0;
     uint8_t size = load.loaded_rep.SizeInBytes();
@@ -455,7 +403,7 @@ class MemoryContentTable
 #endif
 
  private:
-  void Insert(OpIndex base, OpIndex index, int32_t offset,
+  void Insert(OpIndex base, OptionalOpIndex index, int32_t offset,
               uint8_t element_size_log2, uint8_t size, OpIndex value) {
     DCHECK_EQ(base, ResolveBase(base));
 
@@ -472,12 +420,16 @@ class MemoryContentTable
     Set(key, value);
   }
 
-  void InsertImmutable(OpIndex base, OpIndex index, int32_t offset,
+  void InsertImmutable(OpIndex base, OptionalOpIndex index, int32_t offset,
                        uint8_t element_size_log2, uint8_t size, OpIndex value) {
     DCHECK_EQ(base, ResolveBase(base));
 
     MemoryAddress mem{base, index, offset, element_size_log2, size};
-    DCHECK_EQ(all_keys_.find(mem), all_keys_.end());
+    auto existing_key = all_keys_.find(mem);
+    if (existing_key != all_keys_.end()) {
+      SetNoNotify(existing_key->second, value);
+      return;
+    }
 
     // Creating a new key.
     Key key = NewKey({mem});
@@ -598,10 +550,11 @@ class LateLoadEliminationAnalyzer {
   LateLoadEliminationAnalyzer(Graph& graph, Zone* phase_zone,
                               JSHeapBroker* broker)
       : graph_(graph),
+        phase_zone_(phase_zone),
         broker_(broker),
         replacements_(graph.op_id_count(), phase_zone),
-        non_aliasing_objects_(graph, phase_zone),
-        object_maps_(graph, phase_zone),
+        non_aliasing_objects_(phase_zone),
+        object_maps_(phase_zone),
         memory_(phase_zone, non_aliasing_objects_, object_maps_, replacements_),
         block_to_snapshot_mapping_(graph.block_count(), phase_zone),
         predecessor_alias_snapshots_(phase_zone),
@@ -609,18 +562,20 @@ class LateLoadEliminationAnalyzer {
         predecessor_memory_snapshots_(phase_zone) {}
 
   void Run() {
-    bool compute_start_snapshot = true;
-    for (uint32_t block_index = 0; block_index < graph_.block_count();
-         block_index++) {
-      const Block& block = graph_.Get(BlockIndex{block_index});
+    LoopFinder loop_finder(phase_zone_, &graph_);
+    AnalyzerIterator iterator(phase_zone_, graph_, loop_finder);
 
-      ProcessBlock(block, compute_start_snapshot);
+    bool compute_start_snapshot = true;
+    while (iterator.HasNext()) {
+      const Block* block = iterator.Next();
+
+      ProcessBlock(*block, compute_start_snapshot);
       compute_start_snapshot = true;
 
       // Consider re-processing for loops.
-      if (const GotoOp* last = block.LastOperation(graph_).TryCast<GotoOp>()) {
+      if (const GotoOp* last = block->LastOperation(graph_).TryCast<GotoOp>()) {
         if (last->destination->IsLoop() &&
-            last->destination->LastPredecessor() == &block) {
+            last->destination->LastPredecessor() == block) {
           const Block* loop_header = last->destination;
           // {block} is the backedge of a loop. We recompute the loop header's
           // initial snapshots, and if they differ from its original snapshot,
@@ -647,7 +602,7 @@ class LateLoadEliminationAnalyzer {
             object_maps_.StartNewSnapshot(pred_snapshots->maps_snapshot);
             memory_.StartNewSnapshot(pred_snapshots->memory_snapshot);
 
-            block_index = loop_header->index().id() - 1;
+            iterator.MarkLoopForRevisit();
             compute_start_snapshot = false;
           } else {
             SealAndDiscard();
@@ -691,7 +646,12 @@ class LateLoadEliminationAnalyzer {
   void InvalidateIfAlias(OpIndex op_idx);
 
   Graph& graph_;
+  Zone* phase_zone_;
   JSHeapBroker* broker_;
+
+#if V8_ENABLE_WEBASSEMBLY
+  bool is_wasm_ = PipelineData::Get().is_wasm();
+#endif
 
   FixedSidetable<OpIndex> replacements_;
 
